@@ -177,10 +177,10 @@ async def ps2_decode_two_bytes_test(dut):
     assert dut.data_rdy.value == 1, f"data ready not set after valid"
 
     value = await read_byte(dut)
-    assert value == 0xF0, f"Expected 0xF0, got {value.hex()}"
+    assert value == 0xF0, f"Expected 0xF0, got {int(value):#04x}"
 
     value = await read_byte(dut)
-    assert value == 0x15, f"Expected 0x15, got {value.hex()}"
+    assert value == 0x15, f"Expected 0x15, got {int(value):#04x}"
 
     await Timer(100, unit="us")
 
@@ -213,7 +213,7 @@ async def ps2_decode_two_bytes_int_clear_test(dut):
     await Timer(1, unit="us")
 
     value = await read_byte(dut)
-    assert value == 0xF1, f"Expected 0xF1, got {value.hex()}"
+    assert value == 0xF1, f"Expected 0xF1, got {int(value):#04x}"
 
     assert dut.data_rdy.value == 0, f"data ready not cleared after read"
     assert dut.interupt.value == 1, f"Interupt not set after read"
@@ -231,7 +231,7 @@ async def ps2_decode_two_bytes_int_clear_test(dut):
     await Timer(1, unit="us")
 
     value = await read_byte(dut)
-    assert value == 0x16, f"Expected 0x16, got {value.hex()}"
+    assert value == 0x16, f"Expected 0x16, got {int(value):#04x}"
 
     assert dut.data_rdy.value == 0, f"data ready not cleared after read"
     assert dut.interupt.value == 1, f"Interupt not set after read"

@@ -19,6 +19,19 @@ module tb ();
   reg ena;
   reg [7:0] ui_in;
   reg [7:0] uio_in;
+
+  // Drive every DUT input to a defined value from time 0. Gate-level netlists
+  // don't tolerate X the way RTL simulation does: the synthesized async-reset
+  // flip-flop primitives need CLK at a determinate level to resolve Q even
+  // while reset is asserted, and an undriven pin (ena, uio_in, the unused
+  // ui_in[7:4]) can leak X into the synthesized design even though the RTL
+  // only ever treats them as don't-cares.
+  initial begin
+    clk = 1'b0;
+    ena = 1'b1;
+    uio_in = 8'h00;
+    ui_in[7:4] = 4'b0000;
+  end
   wire [7:0] uo_out;
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
