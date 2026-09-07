@@ -1,6 +1,10 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# PS/2 Keyboard Decoder for 68k Systems (TinyTapeout IHP 26b)
+
+A PS/2 keyboard decoder for interfacing retro 68k-based systems, targeting the Tiny Tapeout IHP 26b shuttle (IHP SG13G2, 130nm BiCMOS).
+
+This is a port of [ttgf-ps2-m68k](https://github.com/benpayne/ttgf-ps2-m68k), originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalFoundries GF180MCU). See [docs/info.md](docs/info.md) for details on how the design works and what changed in the port - notably, IHP SG13G2 does not offer GF180's native 5V I/O tolerance, so external level shifting is required for the 5V PS/2 signals.
 
 - [Read the documentation for project](docs/info.md)
 

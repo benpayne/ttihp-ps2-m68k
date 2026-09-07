@@ -23,8 +23,29 @@ module tb ();
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
 
+  wire ps2_clk;
+  wire ps2_data;
+  wire clear_int;
+  wire valid;
+  wire interupt;
+  wire cs;
+  wire data_rdy;
+  wire fifo_full;
+  wire uart_tx;
+
+  assign ui_in[0] = ps2_clk;
+  assign ui_in[1] = ps2_data;
+  assign ui_in[2] = clear_int;
+  assign ui_in[3] = cs;
+
+  assign valid = uo_out[0];
+  assign interupt = uo_out[1];
+  assign data_rdy = uo_out[2];
+  assign fifo_full = uo_out[3];
+  assign uart_tx = uo_out[4];
+
   // Replace tt_um_example with your module name:
-  tt_um_example user_project (
+  tt_um_benpayne_ps2_decoder user_project (
       .ui_in  (ui_in),    // Dedicated inputs
       .uo_out (uo_out),   // Dedicated outputs
       .uio_in (uio_in),   // IOs: Input path
