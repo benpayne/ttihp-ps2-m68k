@@ -22,7 +22,21 @@ COMPILE_ARGS    += -DGL_TEST
 COMPILE_ARGS    += -DFUNCTIONAL
 COMPILE_ARGS    += -DSIM
 VERILOG_SOURCES += $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_io/verilog/sg13g2_io.v
-VERILOG_SOURCES += $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v
+
+# The vendor sg13g2_stdcell.v models sequential cells (flip-flops, latches,
+# clock gates) via specify-block-driven "delayed_*" nets that Icarus Verilog
+# does not support, which makes every register read X in gate-level sim (see
+# gl_sim_cell_models.v for the full explanation). Strip those cell
+# definitions out of a filtered copy of the vendor file and substitute our
+# own functional-only replacements instead - simulation only, this doesn't
+# touch the real PDK files used for synthesis/GDS.
+GL_STDCELL_SRC := $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v
+GL_STDCELL_FILTERED := $(PWD)/sim_build/gl/sg13g2_stdcell_filtered.v
+$(shell mkdir -p $(PWD)/sim_build/gl)
+$(shell python3 $(PWD)/strip_gl_timing_cells.py $(GL_STDCELL_SRC) $(GL_STDCELL_FILTERED))
+
+VERILOG_SOURCES += $(GL_STDCELL_FILTERED)
+VERILOG_SOURCES += $(PWD)/gl_sim_cell_models.v
 
 # this gets copied in by the GDS action workflow
 VERILOG_SOURCES += $(PWD)/gate_level_netlist.v

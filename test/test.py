@@ -30,11 +30,20 @@ async def send_bits(ps2_clk, ps2_data, value, bit_count=8, parity_valid=True, st
 
 
 async def read_byte(dut):
-    await Timer(40, unit="ns")
+    # Every delay elsewhere in this test suite is a clean multiple of the 40ns
+    # clock period, so without an off-grid offset here, `cs.value = 1` below
+    # would land on the *exact same simulated instant* as a clock edge - a
+    # same-timestep race between that write and cs_prev's flip-flop sampling
+    # it, which RTL sim happens to resolve favorably and gate-level sim (extra
+    # logic depth between the clock and the observable value) can lose. +5ns
+    # keeps every subsequent Timer-based wait in this function off that grid.
+    await Timer(45, unit="ns")
     assert dut.uio_oe.value == 0x00, "uio_oe must not be set before a read"
     dut.cs.value = 1
-    # wait 3 clock to ensure that cs doesn't double trigger and read multiple bytes. only one byte per rising edge.
-    await Timer(120, unit="ns")
+    # data_out is registered on the 3rd clock edge after cs rises (cs_trigger's
+    # 2-cycle glitch filter, then the FIFO's own read register), i.e. valid
+    # from 120ns onward; wait comfortably past that.
+    await Timer(160, unit="ns")
     assert dut.uio_oe.value == 0xFF, "uio_oe must be set when reading data"
     dut.cs.value = 0
     return dut.uio_out.value
@@ -463,6 +472,8 @@ async def test_cs_held_high(dut):
 
     # Hold CS high for extended period (1us = 25 cycles)
     assert dut.uio_oe.value == 0x00, "uio_oe must not be set before CS"
+    # +5ns keeps this off the 40ns clock grid - see read_byte() for why.
+    await Timer(5, unit="ns")
     dut.cs.value = 1
     await Timer(1, unit="us")  # Hold for 25 cycles
 
