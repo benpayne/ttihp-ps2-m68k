@@ -6,7 +6,11 @@ When the host wants to read a byte, it asserts the chip select (cs) signal when 
 
 The design includes a fifo_full output signal that indicates when the FIFO buffer is full (4 bytes).  When full, additional bytes from the keyboard will be silently dropped until space becomes available.  Software should monitor this flag to detect potential data loss during rapid typing.
 
-For debugging on the bench, uo[4] also carries a 115200 baud UART transmission of a status byte followed by the decoded PS/2 byte, sent each time a valid byte is captured.
+**Interrupt semantics (important for driver writers):** `interupt` is set by the *arrival* of a byte, not by FIFO occupancy. If two bytes arrive before the host services the first, reading one byte and then pulsing `clear_int` leaves the second byte queued with `interupt` low. An interrupt handler should therefore drain the FIFO while `data_rdy` is high (or re-check `data_rdy` after `clear_int`) rather than assume one interrupt equals one byte. Reading a byte never re-raises the interrupt; only a new arrival does.
+
+Reading with the FIFO empty is harmless: the data bus simply holds the last byte read and the FIFO state is unchanged, so a polling host can read speculatively.
+
+For debugging on the bench, uo[4] also carries a 115200 baud 8N1 UART transmission each time a valid byte is captured: a status byte followed by the decoded PS/2 byte. The status byte is `{0000, fifo_full, data_rdy, interupt, 1}` (bit 0 always 1 as a frame marker), sampled two clocks after `valid` so the flags reflect the byte just queued - e.g. `0x07` for a normal byte, `0x0F` when it landed in a full FIFO. Bytes dropped from a full FIFO are still echoed on the UART.
 
 ## Port from TTGF0p2 (GF180) to TT IHP 26b (IHP SG13G2)
 
@@ -16,7 +20,8 @@ This project was originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalF
 
 - **No VPWR/VGND ports** - the IHP template's top module interface (`ui_in, uo_out, uio_in, uio_out, uio_oe, ena, clk, rst_n`) doesn't require explicit power ports on every submodule, unlike the GF180 flow. All power routing is handled by the standard cell fabric.
 - **I/O voltage** - IHP's standard digital pads are **not natively 5V-tolerant** like GF180's. PS/2 signaling is 5V, so this design now requires **external level shifting or a resistive voltage divider** on `ui_in[0]` (ps2_clk) and `ui_in[1]` (ps2_data) to bring the signal down to the IHP pad's supported input range before it reaches the chip. This is the same external hardware requirement the original Sky130-based TT08 version of this project needed - GF180's 5V tolerance was a temporary advantage that doesn't carry over to IHP.
-- **Core logic unchanged** - the PS/2 protocol decoder, debouncer, and FIFO are bit-for-bit the same design that passed all 16 functional tests on the GF180 target; only the power/pad interface differs.
+- **Core logic unchanged** - the PS/2 protocol decoder, debouncer, and FIFO are the same design that passed all functional tests on the GF180 target; only the power/pad interface differs.
+- **UART debug output fixed** - the GF180 version's UART state machine advanced past its "wait for transmit to finish" check one cycle early (the UART's busy flag has a cycle of latency), so only the status byte was ever transmitted and the data byte was dropped. The three UART tests had been skipped as "timing sensitive"; un-skipping them exposed the bug. Fixed here, and the UART module now uses an asynchronous reset like the rest of the design.
 
 ## How to test
 

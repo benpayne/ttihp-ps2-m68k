@@ -27,7 +27,9 @@ module uart_tx #(
     reg [2:0]  bit_index;
     reg [7:0]  tx_data_reg;
 
-    always @(posedge clk) begin
+    // Async reset like every other module, so tx idles high from the moment
+    // reset is applied rather than only after the first clock edge.
+    always @(posedge clk or posedge rst) begin
         if (rst) begin
             state       <= IDLE;
             tx          <= 1'b1;  // Idle high

@@ -54,7 +54,6 @@ module tt_um_benpayne_ps2_decoder (
   localparam UART_WAIT_DATA     = 4'd7;
 
   reg [3:0] uart_state;
-  reg [7:0] captured_status;
   reg [7:0] captured_data;
 
   assign int_clear = ui_in[2];
@@ -104,7 +103,6 @@ module tt_um_benpayne_ps2_decoder (
       uart_state <= UART_IDLE;
       uart_tx_start <= 0;
       uart_tx_data <= 8'd0;
-      captured_status <= 8'd0;
       captured_data <= 8'd0;
     end else begin
       case (uart_state)
@@ -131,16 +129,20 @@ module tt_um_benpayne_ps2_decoder (
         end
 
         UART_SEND_STATUS: begin
-          // Pulse uart_tx_start (uart_tx_data was set in previous cycle)
-          uart_tx_start <= 1;
-          uart_state <= UART_WAIT_STATUS;
+          // Pulse uart_tx_start once the UART is free (uart_tx_data was set
+          // in the previous cycle). uart_tx only honors tx_start while idle.
+          if (!uart_tx_busy) begin
+            uart_tx_start <= 1;
+            uart_state <= UART_WAIT_STATUS;
+          end
         end
 
         UART_WAIT_STATUS: begin
           uart_tx_start <= 0;
-          // Wait for UART to finish transmitting status byte
-          // Once tx_busy goes low, UART has finished
-          if (!uart_tx_busy) begin
+          // tx_busy rises one cycle after tx_start is seen, so on the first
+          // cycle here it still reads 0. Also requiring uart_tx_start to have
+          // dropped keeps us from advancing on that stale value.
+          if (!uart_tx_busy && !uart_tx_start) begin
             uart_state <= UART_PREP_DATA;
           end
         end
@@ -153,15 +155,15 @@ module tt_um_benpayne_ps2_decoder (
         end
 
         UART_SEND_DATA: begin
-          // Now pulse tx_start (uart_tx_data is already set from prev cycle)
-          uart_tx_start <= 1;
-          uart_state <= UART_WAIT_DATA;
+          if (!uart_tx_busy) begin
+            uart_tx_start <= 1;
+            uart_state <= UART_WAIT_DATA;
+          end
         end
 
         UART_WAIT_DATA: begin
           uart_tx_start <= 0;
-          // Wait for UART to finish transmitting data byte
-          if (!uart_tx_busy) begin
+          if (!uart_tx_busy && !uart_tx_start) begin
             uart_state <= UART_IDLE;
           end
         end
