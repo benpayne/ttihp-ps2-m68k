@@ -33,6 +33,12 @@ module tt_um_benpayne_ps2_decoder (
   wire data_rdy;
   wire fifo_full;
 
+  // 2-FF synchronizers for the asynchronous host-side inputs. cs fans out to
+  // three flops in the glitch filter below; sampling the raw pin there would
+  // let them disagree on a marginal edge and silently skip a read.
+  reg cs_sync1, cs_sync2;
+  reg int_clear_sync1, int_clear_sync2;
+
   reg cs_prev;
   reg cs_trigger;
   reg cs_stable;  // Require 2 stable cycles before triggering
@@ -65,6 +71,23 @@ module tt_um_benpayne_ps2_decoder (
   assign uo_out[3] = fifo_full;  // FIFO overflow indicator
   assign uo_out[4] = uart_tx;    // UART TX output for debugging
 
+  // uio_oe is deliberately driven by the raw cs so the bus turns around the
+  // moment the host asserts it; only the logic that *samples* cs / clear_int
+  // uses the synchronized copies.
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      cs_sync1 <= 0;
+      cs_sync2 <= 0;
+      int_clear_sync1 <= 0;
+      int_clear_sync2 <= 0;
+    end else begin
+      cs_sync1 <= cs;
+      cs_sync2 <= cs_sync1;
+      int_clear_sync1 <= int_clear;
+      int_clear_sync2 <= int_clear_sync1;
+    end
+  end
+
   // CS edge detection with glitch filtering
   // Requires CS to be stable high for 2 cycles after rising edge before triggering read
   always @(posedge clk or negedge rst_n) begin
@@ -73,20 +96,20 @@ module tt_um_benpayne_ps2_decoder (
       cs_trigger <= 0;
       cs_stable <= 0;
     end else begin
-      cs_prev <= cs;
+      cs_prev <= cs_sync2;
 
       // Rising edge detected - wait one more cycle for stability
-      if (cs_prev == 0 && cs == 1) begin
+      if (cs_prev == 0 && cs_sync2 == 1) begin
         cs_stable <= 1;
         cs_trigger <= 0;
       end
       // Second cycle of stable high - trigger read
-      else if (cs == 1 && cs_stable == 1) begin
+      else if (cs_sync2 == 1 && cs_stable == 1) begin
         cs_trigger <= 1;
         cs_stable <= 0;  // Reset to prevent re-trigger while CS held
       end
       // CS went low - reset
-      else if (cs == 0) begin
+      else if (cs_sync2 == 0) begin
         cs_stable <= 0;
         cs_trigger <= 0;
       end
@@ -216,7 +239,7 @@ module tt_um_benpayne_ps2_decoder (
       .data(ps2_key_data),
       .valid(valid),
       .interupt(interupt),
-      .int_clear(int_clear)
+      .int_clear(int_clear_sync2)
   );
 
   uart_tx #(

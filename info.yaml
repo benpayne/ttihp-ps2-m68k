@@ -1,6 +1,6 @@
 # Tiny Tapeout project information
 project:
-  title:        "PS2 Decoder"              # Project title
+  title:        "PS/2 Keyboard Decoder for 68k"  # Project title
   author:       "Ben Payne"                # Your name
   discord:      "interlude_audio_ben"      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "A PS2 keyboard decoder for retro 68k systems (IHP SG13G2)"   # One line description of what your project does

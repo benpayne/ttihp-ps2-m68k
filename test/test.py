@@ -5,12 +5,22 @@ import random
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import First, RisingEdge, Timer
+from cocotb.triggers import First, ReadOnly, RisingEdge, Timer
 
 CLK_NS = 40                 # 25 MHz system clock
 PS2_HALF_US = 50            # default PS/2 half-period (10 kHz)
 FIFO_DEPTH = 4
 UART_BIT_NS = 217 * CLK_NS  # 115200 baud @ 25 MHz
+
+# cs rising -> data valid on the bus: 2 sync stages + cs_prev/cs_stable edge
+# detect + cs_trigger + the FIFO's registered data_out = 5 clock edges. Hosts
+# should allow this much (200ns) before sampling; we wait one edge more.
+CS_TO_DATA_NS = 5 * CLK_NS
+READ_SAMPLE_NS = CS_TO_DATA_NS + CLK_NS
+
+
+def now_ns():
+    return cocotb.utils.get_sim_time(unit="ns")
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +57,28 @@ async def reset_dut(dut):
     await Timer(10, unit="us")
     assert dut.interupt.value == 0, "interrupt not clear after reset"
     assert dut.data_rdy.value == 0, "FIFO not empty after reset"
+    cocotb.start_soon(invariant_monitor(dut))
+
+
+async def invariant_monitor(dut):
+    """Properties that must hold on every clock of every test. Runs as a
+    background task; an assertion here fails the current test."""
+    prev_valid = 0
+    prev_int = 0
+    while True:
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        cs = int(dut.cs.value)
+        oe = int(dut.uio_oe.value)
+        assert oe == (0xFF if cs else 0x00), f"uio_oe {oe:#04x} doesn't follow cs={cs}"
+        valid = int(dut.valid.value)
+        assert not (valid and prev_valid), "valid high on two consecutive cycles"
+        intr = int(dut.interupt.value)
+        if intr and not prev_int:
+            assert prev_valid, "interupt rose without a preceding valid"
+        assert not (int(dut.fifo_full.value) and not int(dut.data_rdy.value)), \
+            "fifo_full and empty at the same time"
+        prev_valid, prev_int = valid, intr
 
 
 def check_idle_outputs(dut, where):
@@ -118,9 +150,7 @@ async def read_byte(dut):
     await settle_offgrid(dut)
     assert dut.uio_oe.value == 0x00, "uio_oe must not be set before a read"
     dut.cs.value = 1
-    # data_out is registered on the 3rd clock edge after cs rises (2-cycle
-    # glitch filter, then the FIFO's own read register); we sample after the 4th.
-    await Timer(160, unit="ns")
+    await Timer(READ_SAMPLE_NS, unit="ns")
     assert dut.uio_oe.value == 0xFF, "uio_oe must be set when reading data"
     value = int(dut.uio_out.value)
     dut.cs.value = 0
@@ -128,11 +158,13 @@ async def read_byte(dut):
 
 
 async def pulse_clear_int(dut):
+    """clear_int must be high for 2 clocks to get through its synchronizer;
+    the interrupt drops on the 3rd edge."""
     await settle_offgrid(dut)
     dut.clear_int.value = 1
-    await Timer(80, unit="ns")
+    await Timer(2 * CLK_NS, unit="ns")
     dut.clear_int.value = 0
-    await Timer(40, unit="ns")
+    await Timer(4 * CLK_NS, unit="ns")
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +252,40 @@ async def test_reset_during_transmission(dut):
     assert await read_byte(dut) == 0x66
 
 
+@cocotb.test()
+async def test_reset_while_cs_high(dut):
+    """Reset with the host holding cs: bus enable follows cs (combinational),
+    everything else goes idle, and a normal read works afterwards."""
+    await reset_dut(dut)
+    await send_and_wait_valid(dut, 0x4D)
+
+    await settle_offgrid(dut)
+    dut.cs.value = 1
+    await Timer(100, unit="ns")
+    dut.rst_n.value = 0
+    await Timer(200, unit="ns")
+    assert dut.uio_oe.value == 0xFF, "uio_oe follows cs even in reset"
+    assert int(dut.uio_out.value) == 0x00, "data_out reset"
+    assert dut.data_rdy.value == 0
+    assert dut.interupt.value == 0
+    assert dut.fifo_full.value == 0
+
+    await settle_offgrid(dut)
+    dut.rst_n.value = 1
+    await Timer(READ_SAMPLE_NS + 2 * CLK_NS, unit="ns")
+    # cs was already high on release: the filter sees a rising edge and issues
+    # a read of the (empty) FIFO, which must be harmless
+    assert dut.data_rdy.value == 0
+    assert dut.fifo_full.value == 0
+    dut.cs.value = 0
+    await Timer(10, unit="us")
+    assert dut.uio_oe.value == 0x00
+
+    await send_and_wait_valid(dut, 0x5B)
+    assert await read_byte(dut) == 0x5B
+    assert dut.data_rdy.value == 0
+
+
 # ===========================================================================
 # Basic decode
 # ===========================================================================
@@ -280,6 +346,57 @@ async def test_variable_ps2_clock_slow(dut):
     await reset_dut(dut)
     await send_and_wait_valid(dut, 0x88, half_us=62)
     assert await read_byte(dut) == 0x88
+
+
+@cocotb.test()
+async def test_ps2_clock_spec_max(dut):
+    """16.7 kHz PS/2 clock (the spec maximum)."""
+    await reset_dut(dut)
+    await send_and_wait_valid(dut, 0x99, half_us=30)
+    assert await read_byte(dut) == 0x99
+
+
+async def send_bits_duty(dut, value, high_us, low_us):
+    for bit in frame_bits(value):
+        dut.ps2_data.value = bit
+        dut.ps2_clk.value = 1
+        await Timer(high_us, unit="us")
+        dut.ps2_clk.value = 0
+        await Timer(low_us, unit="us")
+    dut.ps2_clk.value = 1
+
+
+@cocotb.test()
+async def test_ps2_asymmetric_duty(dut):
+    """A long clock-high phase within a frame (70us, well under the 100us
+    end-of-frame timeout) must not be mistaken for the end of the frame."""
+    await reset_dut(dut)
+    cocotb.start_soon(send_bits_duty(dut, 0x6B, high_us=70, low_us=30))
+    await RisingEdge(dut.valid)
+    await Timer(80, unit="ns")
+    assert await read_byte(dut) == 0x6B
+    assert dut.data_rdy.value == 0
+
+
+@cocotb.test()
+async def test_inter_byte_gap_too_short(dut):
+    """Known limitation, pinned down: framing relies on >100us of idle clock
+    between bytes. Two frames closer than that run together; the shift
+    register keeps the last 11 bits, so the SECOND byte is recovered and the
+    first is lost. Real keyboards leave >=1ms between bytes."""
+    await reset_dut(dut)
+
+    async def two_frames_20us_apart():
+        await send_bits(dut.ps2_clk, dut.ps2_data, 0xAA)
+        await Timer(20, unit="us")
+        await send_bits(dut.ps2_clk, dut.ps2_data, 0x55)
+    cocotb.start_soon(two_frames_20us_apart())
+
+    await RisingEdge(dut.valid)
+    await Timer(80, unit="ns")
+    await expect_no_valid(dut, 0.5)
+    assert await read_byte(dut) == 0x55, "the second frame should be the one recovered"
+    assert dut.data_rdy.value == 0, "exactly one byte should have been queued"
 
 
 # ===========================================================================
@@ -425,7 +542,7 @@ async def test_cs_glitch_rejected(dut):
     dut.cs.value = 1
     await Timer(CLK_NS, unit="ns")
     dut.cs.value = 0
-    await Timer(200, unit="ns")
+    await Timer(READ_SAMPLE_NS + 2 * CLK_NS, unit="ns")
     assert dut.data_rdy.value == 1, "1-cycle cs glitch consumed a byte"
 
     # 2 cycles high -> accepted (the minimum)
@@ -433,7 +550,7 @@ async def test_cs_glitch_rejected(dut):
     dut.cs.value = 1
     await Timer(2 * CLK_NS, unit="ns")
     dut.cs.value = 0
-    await Timer(200, unit="ns")
+    await Timer(READ_SAMPLE_NS + 2 * CLK_NS, unit="ns")
     assert dut.data_rdy.value == 0, "2-cycle cs pulse should have read the byte"
     assert int(dut.uio_out.value) == 0x3C
 
@@ -537,7 +654,7 @@ async def test_interrupt_with_queued_data(dut):
     # clear_int held high permanently: interrupt degenerates to a pulse
     await settle_offgrid(dut)
     dut.clear_int.value = 1
-    await Timer(80, unit="ns")
+    await Timer(5 * CLK_NS, unit="ns")
     assert dut.interupt.value == 0
     cocotb.start_soon(send_bits(dut.ps2_clk, dut.ps2_data, 0x22))
     await RisingEdge(dut.interupt)
@@ -600,6 +717,47 @@ async def test_fifo_wraparound(dut):
         assert await read_byte(dut) == v
     assert dut.data_rdy.value == 0
     assert dut.fifo_full.value == 0
+
+
+@cocotb.test()
+async def test_fifo_read_write_same_cycle(dut):
+    """Sweep a host read across the cycle in which a new byte is written,
+    hitting the FIFO's simultaneous read+write case deterministically. With
+    one byte (A) queued and B arriving, every alignment must end with exactly
+    B queued: A read out, count neither lost nor double-counted."""
+    await reset_dut(dut)
+
+    # Frame-start -> valid is deterministic from an off-grid start; measure it.
+    await settle_offgrid(dut)
+    t0 = now_ns()
+    cocotb.start_soon(send_bits(dut.ps2_clk, dut.ps2_data, 0x5A))
+    await RisingEdge(dut.valid)
+    start_to_valid = now_ns() - t0
+    await Timer(80, unit="ns")
+    assert await read_byte(dut) == 0x5A
+
+    for k in range(-6, 7):
+        a, b = 0xA0 + k + 6, 0xB0 + k + 6
+        await send_and_wait_valid(dut, a)
+        assert dut.data_rdy.value == 1
+
+        await settle_offgrid(dut)
+        t0 = now_ns()
+        cocotb.start_soon(send_bits(dut.ps2_clk, dut.ps2_data, b))
+        # The FIFO write lands one edge after valid; the read lands 5 edges
+        # after cs rises. Slide cs so the read edge sweeps across the write edge.
+        await Timer(start_to_valid + 5 + (k - 4) * CLK_NS, unit="ns")
+        dut.cs.value = 1
+        await Timer(READ_SAMPLE_NS, unit="ns")
+        got = int(dut.uio_out.value)
+        dut.cs.value = 0
+        assert got == a, f"k={k}: read {got:#04x}, expected {a:#04x}"
+
+        await Timer(300, unit="us")  # frame b certainly finished
+        assert dut.data_rdy.value == 1, f"k={k}: B should be queued"
+        assert dut.fifo_full.value == 0, f"k={k}: count corrupted (full)"
+        assert await read_byte(dut) == b, f"k={k}"
+        assert dut.data_rdy.value == 0, f"k={k}: count corrupted (not empty)"
 
 
 @cocotb.test()
