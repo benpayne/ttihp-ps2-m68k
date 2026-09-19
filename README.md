@@ -1,46 +1,69 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# PS/2 Keyboard Decoder for 68k Systems (TinyTapeout IHP 26b)
+# PS/2 Keyboard Decoder for 68k Systems (Tiny Tapeout IHP 26b)
 
-A PS/2 keyboard decoder for interfacing retro 68k-based systems, targeting the Tiny Tapeout IHP 26b shuttle (IHP SG13G2, 130nm BiCMOS).
+A PS/2 keyboard decoder for interfacing retro 68k-based systems, targeting the
+Tiny Tapeout IHP 26b shuttle (IHP SG13G2, 130nm SiGe BiCMOS).
 
-This is a port of [ttgf-ps2-m68k](https://github.com/benpayne/ttgf-ps2-m68k), originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalFoundries GF180MCU). See [docs/info.md](docs/info.md) for details on how the design works and what changed in the port - notably, IHP SG13G2 does not offer GF180's native 5V I/O tolerance, so external level shifting is required for the 5V PS/2 signals.
+The design debounces and synchronizes the PS/2 clock and data lines, decodes the
+11-bit PS/2 frame (start + 8 data + parity + stop), validates it, and queues the
+scan code in a 4-byte FIFO for the host to read over an 8-bit bus. A sticky
+interrupt flag and a `data_rdy` status line let the host service bytes either by
+interrupt or by polling. For bench debugging, every captured byte is also echoed
+out a 115200 baud 8N1 UART on `uo[4]` as a status byte followed by the scan code.
 
-- [Read the documentation for project](docs/info.md)
+This is a port of [ttgf-ps2-m68k](https://github.com/benpayne/ttgf-ps2-m68k),
+originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalFoundries GF180MCU).
 
-## What is Tiny Tapeout?
+> **External hardware required:** unlike GF180, IHP SG13G2 does not offer native
+> 5V-tolerant I/O, so the 5V PS/2 CLK and DATA lines need external level shifting
+> (or a resistive divider) before reaching `ui[0]` and `ui[1]`.
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
+**[Read the full documentation, including host bus timing →](docs/info.md)**
 
-To learn more and get started, visit https://tinytapeout.com.
+## Pinout
 
-## Set up your Verilog project
+| Pin | Name | Description |
+| --- | --- | --- |
+| `ui[0]` | `ps2_clk` | PS/2 clock (level-shifted) |
+| `ui[1]` | `ps2_data` | PS/2 data (level-shifted) |
+| `ui[2]` | `clear_int` | Clear the interrupt flag (active high, ≥2 clocks) |
+| `ui[3]` | `cs` | Chip select / read strobe (active high, ≥2 clocks) |
+| `uo[0]` | `valid` | Single-cycle pulse when a byte is decoded |
+| `uo[1]` | `interupt` | Sticky interrupt flag, **active high** |
+| `uo[2]` | `data_rdy` | FIFO has data to read |
+| `uo[3]` | `fifo_full` | FIFO full; further bytes are dropped |
+| `uo[4]` | `uart_tx` | 115200 8N1 debug output |
+| `uio[7:0]` | `data_out` | Scan code byte; driven while `cs` is high |
 
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
+The system clock is 25 MHz. Allow at least 200 ns from `cs` rising before
+sampling the data bus — see [docs/info.md](docs/info.md) for the full timing
+rules and the interrupt semantics a driver needs to get right.
 
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
+## Repository layout
 
-## Enable GitHub actions to build the results page
+| Path | Contents |
+| --- | --- |
+| `src/` | Verilog sources and the LibreLane hardening config |
+| `test/` | cocotb testbench — see [test/README.md](test/README.md) |
+| `docs/info.md` | Design documentation and datasheet text |
+| `info.yaml` | Tiny Tapeout project metadata and pinout |
 
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
+## Building
 
-## Resources
+The GitHub Actions in this repo build the GDS with
+[LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/), run the
+Tiny Tapeout precheck, and run the testbench against the post-layout netlist.
+To harden locally instead, see the
+[local hardening guide](https://www.tinytapeout.com/guides/local-hardening/).
 
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
+## About Tiny Tapeout
 
-## What next?
+Tiny Tapeout is an educational project that makes it easier and cheaper than
+ever to get your digital and analog designs manufactured on a real chip. Learn
+more at [tinytapeout.com](https://tinytapeout.com), or read the
+[FAQ](https://tinytapeout.com/faq/).
 
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).
