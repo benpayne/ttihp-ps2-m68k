@@ -34,11 +34,15 @@ originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalFoundries GF180MCU
 | `uo[2]` | `data_rdy` | FIFO has data to read |
 | `uo[3]` | `fifo_full` | FIFO full; further bytes are dropped |
 | `uo[4]` | `uart_tx` | 115200 8N1 debug output |
+| `uo[5]` | `ps2_clk_dbg` | Debounced PS/2 clock (bring-up tap) |
+| `uo[6]` | `ps2_data_dbg` | Debounced PS/2 data (bring-up tap) |
+| `uo[7]` | `cs_trigger_dbg` | Internal FIFO read strobe (bring-up tap) |
 | `uio[7:0]` | `data_out` | Scan code byte; driven while `cs` is high |
 
 The system clock is 25 MHz. Allow at least 200 ns from `cs` rising before
 sampling the data bus — see [docs/info.md](docs/info.md) for the full timing
-rules and the interrupt semantics a driver needs to get right.
+rules, the interrupt semantics a driver needs to get right, and the fault
+isolation table for bench bring-up.
 
 ## Repository layout
 

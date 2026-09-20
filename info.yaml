@@ -42,9 +42,9 @@ pinout:
   uo[2]: "data_rdy"
   uo[3]: "fifo_full"
   uo[4]: "uart_tx"
-  uo[5]: ""
-  uo[6]: ""
-  uo[7]: ""
+  uo[5]: "ps2_clk_dbg"
+  uo[6]: "ps2_data_dbg"
+  uo[7]: "cs_trigger_dbg"
 
   # Bidirectional pins
   uio[0]: "data_out[0]"

@@ -1,7 +1,7 @@
 # Testbench
 
 A [cocotb](https://docs.cocotb.org/en/stable/) testbench for the PS/2 keyboard
-decoder. The same 32 tests run against the RTL and, in CI, against the
+decoder. The same 36 tests run against the RTL and, in CI, against the
 post-layout gate-level netlist.
 
 ## Running
@@ -35,6 +35,7 @@ so check that file (CI does this with `! grep failure results.xml`).
 | Interrupt semantics | Interrupt re-asserts on new arrivals, and behaviour with bytes still queued |
 | FIFO | Overflow, pointer wraparound, same-cycle read/write, back-to-back bytes, and a randomized soak |
 | UART debug | Status and data bytes on `uo[4]`, including the `fifo_full` status encoding |
+| Bring-up pins | `uo[5]`/`uo[6]` track the debouncer outputs rather than the raw pads, the clock tap sees all 11 bit-clocks of a frame, and `uo[7]` strobes exactly once per read |
 
 Two things keep the suite honest beyond the individual assertions:
 

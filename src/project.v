@@ -18,7 +18,6 @@ module tt_um_benpayne_ps2_decoder (
 
   // All output pins must be assigned. If not used, assign to 0.
   assign uio_oe = cs ? 8'b11111111 : 8'b00000000;  // uio_out[7:0] are always outputs when CS active
-  assign uo_out[7:5] = 3'b000;  // uo_out[7:5] set to always 0
 
   // List all unused inputs to prevent warnings
   wire _unused = &{ena, uio_in, ui_in[7:4], 1'b0};
@@ -70,6 +69,18 @@ module tt_um_benpayne_ps2_decoder (
   assign uo_out[2] = ~data_rdy;
   assign uo_out[3] = fifo_full;  // FIFO overflow indicator
   assign uo_out[4] = uart_tx;    // UART TX output for debugging
+
+  // Bring-up observability. The UART on uo[4] reports what the *decoder*
+  // produced, which is the FIFO's input; these three expose the points either
+  // side of it that are otherwise invisible from outside the chip:
+  //   uo[5]/uo[6] - the debouncer outputs, so "no valid ever" can be pinned on
+  //                 a dead pad vs. the debounce filter vs. the decoder.
+  //   uo[7]       - the internal read strobe, so a failing host read separates
+  //                 "cs path never triggered" from "FIFO read path is wrong".
+  // Pure taps on existing nets - no extra state, and outputs have ~11ns slack.
+  assign uo_out[5] = ps2_clk_internal;
+  assign uo_out[6] = ps2_data_internal;
+  assign uo_out[7] = cs_trigger;
 
   // uio_oe is deliberately driven by the raw cs so the bus turns around the
   // moment the host asserts it; only the logic that *samples* cs / clear_int

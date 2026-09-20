@@ -81,7 +81,7 @@ async def invariant_monitor(dut):
         prev_valid, prev_int = valid, intr
 
 
-def check_idle_outputs(dut, where):
+def check_idle_outputs(dut, where, ps2_settled=True):
     assert dut.valid.value == 0, f"{where}: valid should be 0"
     assert dut.interupt.value == 0, f"{where}: interupt should be 0"
     assert dut.data_rdy.value == 0, f"{where}: data_rdy should be 0"
@@ -89,7 +89,12 @@ def check_idle_outputs(dut, where):
     assert dut.uart_tx.value == 1, f"{where}: uart_tx should idle high"
     assert dut.uio_oe.value == 0x00, f"{where}: uio_oe should be 0 with cs low"
     assert int(dut.uio_out.value) == 0x00, f"{where}: uio_out should be 0"
-    assert (int(dut.uo_out.value) >> 5) == 0, f"{where}: uo_out[7:5] should be 0"
+    # uo[7:5] are debug taps: {cs_trigger, ps2_data_internal, ps2_clk_internal}.
+    # The debouncers reset their outputs to 0, so with the PS/2 lines idling
+    # high they read 0b000 until 128 clocks have gone by and 0b011 after.
+    expect_dbg = 0b011 if ps2_settled else 0b000
+    assert (int(dut.uo_out.value) >> 5) == expect_dbg, \
+        f"{where}: uo_out[7:5] should be {expect_dbg:#05b}"
 
 
 # ---------------------------------------------------------------------------
@@ -213,11 +218,11 @@ async def test_reset_values(dut):
     dut.ps2_data.value = 1
     dut.rst_n.value = 0
     await Timer(1, unit="us")
-    check_idle_outputs(dut, "in reset, no clock")
+    check_idle_outputs(dut, "in reset, no clock", ps2_settled=False)
 
     dut.rst_n.value = 1
     await Timer(1, unit="us")
-    check_idle_outputs(dut, "out of reset, no clock")
+    check_idle_outputs(dut, "out of reset, no clock", ps2_settled=False)
 
     cocotb.start_soon(Clock(dut.clk, CLK_NS, unit="ns").start())
     await Timer(10, unit="us")
@@ -872,3 +877,128 @@ async def test_uart_tx_fifo_full_status(dut):
     for i in range(FIFO_DEPTH):
         assert await read_byte(dut) == 0x10 + i
     assert dut.data_rdy.value == 0, "the dropped byte must not appear"
+
+
+# ===========================================================================
+# Bring-up debug pins (uo[7:5])
+# ===========================================================================
+#
+# uo[5] = ps2_clk_internal, uo[6] = ps2_data_internal (the debouncer outputs)
+# uo[7] = cs_trigger (the internal FIFO read strobe)
+#
+# These exist to make a partially-working chip diagnosable: the UART on uo[4]
+# reports the decoder's output, which is the FIFO's *input*, so on its own it
+# can't distinguish a dead PS/2 pad from a debounce problem, nor a cs path that
+# never fires from a FIFO read path that returns the wrong byte.
+
+DEBOUNCE_SETTLE_NS = 200 * CLK_NS  # 128-cycle debounce plus margin
+
+
+@cocotb.test()
+async def test_debug_pins_track_debounced_ps2(dut):
+    """uo[5]/uo[6] expose the debouncer outputs, not the raw pads: they follow
+    a PS/2 line only once the 128-cycle filter has accepted the new level."""
+    await reset_dut(dut)
+    assert int(dut.ps2_clk_dbg.value) == 1, "clk tap should idle high"
+    assert int(dut.ps2_data_dbg.value) == 1, "data tap should idle high"
+
+    # Drive data low. The tap must not move until the debouncer accepts it -
+    # that lag is what tells you the filter is alive rather than bypassed.
+    await settle_offgrid(dut)
+    dut.ps2_data.value = 0
+    await Timer(4 * CLK_NS, unit="ns")
+    assert int(dut.ps2_data_dbg.value) == 1, "data tap moved before debounce"
+    await Timer(DEBOUNCE_SETTLE_NS, unit="ns")
+    assert int(dut.ps2_data_dbg.value) == 0, "data tap never followed the pad"
+
+    dut.ps2_data.value = 1
+    await Timer(DEBOUNCE_SETTLE_NS, unit="ns")
+    assert int(dut.ps2_data_dbg.value) == 1, "data tap never returned high"
+
+    # Same for the clock tap.
+    dut.ps2_clk.value = 0
+    await Timer(DEBOUNCE_SETTLE_NS, unit="ns")
+    assert int(dut.ps2_clk_dbg.value) == 0, "clk tap never followed the pad"
+    dut.ps2_clk.value = 1
+    await Timer(DEBOUNCE_SETTLE_NS, unit="ns")
+    assert int(dut.ps2_clk_dbg.value) == 1, "clk tap never returned high"
+
+
+@cocotb.test()
+async def test_debug_clk_tap_counts_frame_bits(dut):
+    """The clock tap sees all 11 bit-clocks of a frame, so on a bench a silent
+    decoder can be told apart from a PS/2 line never reaching the core."""
+    await reset_dut(dut)
+
+    falling = 0
+
+    async def count_falling_edges():
+        nonlocal falling
+        prev = 1
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            cur = int(dut.ps2_clk_dbg.value)
+            if prev == 1 and cur == 0:
+                falling += 1
+            prev = cur
+
+    counter = cocotb.start_soon(count_falling_edges())
+    await send_and_wait_valid(dut, 0xA5)
+    counter.cancel()
+
+    assert falling == 11, f"clk tap saw {falling} bit-clocks, expected 11"
+    assert await read_byte(dut) == 0xA5
+
+
+@cocotb.test()
+async def test_debug_pin_cs_trigger_pulses_once(dut):
+    """uo[7] is the internal read strobe: exactly one clock wide, once per cs
+    assertion, however long the host holds cs high."""
+    await reset_dut(dut)
+    await send_and_wait_valid(dut, 0x5A)
+    assert int(dut.cs_trigger_dbg.value) == 0, "strobe asserted before any read"
+
+    await settle_offgrid(dut)
+    dut.cs.value = 1
+    high_clocks = 0
+    for _ in range(20):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        high_clocks += int(dut.cs_trigger_dbg.value)
+
+    await RisingEdge(dut.clk)
+    dut.cs.value = 0
+    await Timer(4 * CLK_NS, unit="ns")
+
+    assert high_clocks == 1, \
+        f"read strobe was high for {high_clocks} clocks while cs was held, expected 1"
+
+
+@cocotb.test()
+async def test_debug_pin_cs_trigger_fires_per_read(dut):
+    """One strobe per read, and it still fires on a read of an empty FIFO -
+    which is what separates 'cs path is dead' from 'FIFO returned nothing'."""
+    await reset_dut(dut)
+
+    strobes = 0
+
+    async def count_strobes():
+        nonlocal strobes
+        while True:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            strobes += int(dut.cs_trigger_dbg.value)
+
+    counter = cocotb.start_soon(count_strobes())
+
+    await send_and_wait_valid(dut, 0x11)
+    assert await read_byte(dut) == 0x11
+    await Timer(4 * CLK_NS, unit="ns")
+    assert strobes == 1, f"expected 1 strobe after one read, saw {strobes}"
+
+    # Read again with the FIFO empty: the strobe must still fire.
+    assert await read_byte(dut) == 0x11, "empty read should hold the last byte"
+    await Timer(4 * CLK_NS, unit="ns")
+    counter.cancel()
+    assert strobes == 2, f"expected 2 strobes after two reads, saw {strobes}"

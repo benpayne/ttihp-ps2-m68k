@@ -23,6 +23,49 @@ Reading with the FIFO empty is harmless: the data bus simply holds the last byte
 
 For debugging on the bench, uo[4] also carries a 115200 baud 8N1 UART transmission each time a valid byte is captured: a status byte followed by the decoded PS/2 byte. The status byte is `{0000, fifo_full, data_rdy, interupt, 1}` (bit 0 always 1 as a frame marker), sampled two clocks after `valid` so the flags reflect the byte just queued - e.g. `0x07` for a normal byte, `0x0F` when it landed in a full FIFO. Bytes dropped from a full FIFO are still echoed on the UART.
 
+## Bring-up and fault isolation
+
+A returned chip can't be repaired, so the point of the on-chip instrumentation
+is to work out *which block* failed, well enough to decide what to change on the
+next shuttle. Three signals that are otherwise internal are brought out on the
+spare output pins for that purpose:
+
+| Pin | Signal | What it tells you |
+| --- | --- | --- |
+| `uo[5]` | `ps2_clk_dbg` | The debounced PS/2 clock, i.e. the debouncer's output |
+| `uo[6]` | `ps2_data_dbg` | The debounced PS/2 data |
+| `uo[7]` | `cs_trigger_dbg` | The internal FIFO read strobe, one clock wide per read |
+
+They are direct taps on existing nets - no extra state, and nothing else in the
+design depends on them.
+
+The reason they matter is that the UART on `uo[4]` reports `ps2_key_data`, which
+is the decoder's output and therefore the FIFO's *input*. On its own the UART
+can confirm the whole PS/2 front end works, but it can't see the FIFO's output,
+and it can't distinguish a dead input pad from a debouncer that is swallowing
+the signal. `uo[5]`/`uo[6]` close the first gap, `uo[7]` the second.
+
+**Bringing the chip up without a 68k, a keyboard, or a level shifter:** nothing
+requires a real keyboard - the PS/2 input is a perfectly good injection port.
+Bit-bang known frames onto `ui[0]`/`ui[1]` from a microcontroller (the demo
+board's RP2040 will do), and read the UART back. Because the microcontroller
+drives the demo board directly, this also sidesteps the 5V level-shifting
+requirement for initial bring-up. Then drive `cs` and sample `uio` from the same
+microcontroller to exercise the host half.
+
+**Fault isolation table:**
+
+| Observation | Conclusion |
+| --- | --- |
+| No UART traffic at all | Clock, reset, power, or the UART block |
+| `uo[5]`/`uo[6]` never move while driving the PS/2 lines | Input pad or the debouncer |
+| `uo[5]` toggles 11 times per frame but no `valid` | Shift register, frame validation, or the end-of-frame timeout |
+| UART fires with the right scan code | Entire PS/2 half is good, up to and including the FIFO write |
+| Status byte has `data_rdy=0` | Decoded correctly but the byte didn't land in the FIFO |
+| `fifo_full` asserts on the 5th byte | FIFO counter logic is good |
+| UART correct but a host read returns the wrong byte, `uo[7]` pulsing | `cs` path is fine; fault is in the FIFO read port or the `uio` pads |
+| UART correct but `uo[7]` never pulses | `cs` synchronizer or the glitch filter |
+
 ## Port from TTGF0p2 (GF180) to TT IHP 26b (IHP SG13G2)
 
 This project was originally built for the Tiny Tapeout GF0.2µm shuttle (GlobalFoundries GF180MCU, 180nm), which offered native 5V I/O tolerance and a 3.3V core. It has been ported here to the Tiny Tapeout IHP 26b shuttle, which targets the open source IHP SG13G2 (130nm SiGe BiCMOS) PDK.
